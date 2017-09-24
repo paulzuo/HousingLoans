@@ -1,0 +1,206 @@
+---
+title: "House Loan Data Challenge"
+author: "Paul Zuo"
+date: "Sep 23, 2017"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(error = TRUE)
+knitr::opts_chunk$set(fig.height=5, fig.width=11, warning = F)
+```
+
+# EDA
+### Data Import
+Load the data into R. 
+```{r}
+require(dplyr)
+require(rpart)
+require(ggplot2)
+require(randomForest)
+setwd("/Users/paulzuo/Documents/Penn 2017-2018/Data_Challenges/waf")
+data1 <- read.csv("datasource1.csv", header = TRUE,
+                  stringsAsFactors = F, na.strings = "")
+data2 <- read.csv("datasource2.csv", header = TRUE,
+                  stringsAsFactors = F, na.strings = "")
+data3 <- read.csv("datasource3.csv", header = TRUE,
+                  stringsAsFactors = F, na.strings = "")
+data4 <- read.csv("datasource4.csv", header = TRUE,
+                  stringsAsFactors = F, na.strings = "")
+```
+
+Let's explore each of these datasets.
+```{r}
+head(data1)
+head(data2)
+head(data3)
+head(data4)
+```
+In the second dataframe, we want to average out some of the features based on the zip code.
+```{r}
+data2 <- data2 %>%
+  group_by(PROP_ZIP) %>%
+  summarise_each(funs(mean(., na.rm=TRUE)))
+```
+
+Each of the dataframes has a variable for the property zip code. We will merge the data together by the property zip code. Let's first examine missing data.
+
+```{r}
+sapply(data1, function(x) sum(is.na(x)))
+sapply(data2, function(x) sum(is.na(x)))
+sapply(data3, function(x) sum(is.na(x)))
+sapply(data4, function(x) sum(is.na(x)))
+## let's drop all the rows of data frame 1 where the loan purpose and property type aren't given...
+data1 <- na.omit(data1)
+```
+The greater concern behind having several rows with missing values is that the data could've either been entered wrong or the software tool to scrape the data could be faulty. In either case, we want to exclude the rows entirely. Wrong data is worrisome and can be an indicator of
+some bug in the logging code. Therefore, I would like to talk to the software engineer who implemented the code to see if, perhaps, there are some bugs which affect the data significantly. Now, we merge the dataframes.
+
+```{r}
+unique(data2$PROP_ZIP) ## see that there's more not just necessarily one of each zip code
+
+data <- merge(x = data1, y = data2, by = "PROP_ZIP", all.x = TRUE)
+data <- merge(x = data, y = data3, by = "PROP_ZIP", all.x = TRUE)
+data <- merge(x = data, y = data4, by = "PROP_ZIP", all.x = TRUE)
+```
+
+# Data Cleaning
+Explore the row structure
+```{r}
+head(data)
+```
+
+Look at the correlation between the features.
+```{r}
+str(data)
+summary(data)
+
+myvars <- names(data) %in% c("LOAN_PURP", "PROP_TYPE") 
+newdata <- data[!myvars]
+data$LOAN_PURP <- as.factor(data$LOAN_PURP)
+data$PROP_TYPE <- as.factor(data$PROP_TYPE)
+data$Loan.Issued <- as.factor(data$Loan.Issued)
+```
+
+Now let's take a look at the summary. 
+
+We notice that the loan issued rate is 90.7%- that is 90.7% of the people in the dataset got a loan issued. That's pretty high. 
+
+```{r}
+
+train_sample = sample(nrow(data), size = nrow(data) * 0.66)
+train_data = data[train_sample,]
+test_data = data[-train_sample,]
+
+rf = randomForest(y = train_data$Loan.Issued, x = train_data[, -11], ytest = test_data$Loan.Issued, xtest = test_data[, -11], ntree = 100, mtry = 3, keep.forest = TRUE)
+
+rf
+
+varImpPlot(rf,type=2)
+
+rf$importance
+```
+
+Here, we see that 7 of the most important features are balance difference (from the ending point - starting point), current FICO score, median PP SQFT, ZRI, employed population for the zip code, household median income for the zip code, and household median rent for the zip code. Let's reassess the dataset, using just these features.
+
+```{r}
+myvars <- names(data) %in% c("BAL_DIFF", "CURRENT_FICO_SCORE", "ZRI_YOY", "HOUSEHOLD_MEDIANINCOME", "HOUSEHOLD_MEDIANRENT", "MEDIAN_PPSQFT", "POPULATION_EMPLOYED", "Loan.Issued") 
+slimdata <- data[myvars]
+slimdata$Loan.Issued <- as.factor(slimdata$Loan.Issued)
+summary(slimdata)
+```
+
+We notice a few things:
+
+1) The sample of people in this dataset have a pretty large negative balance difference- the difference between the current loan balance and the original loan balance is fairly negative. 
+
+2) The median FICO score is 774, which indicates that most people in this dataset have at least a solid credit score (assuming a "very good" credit FICO score is 740-799)
+
+3) The median PP SQ FT is $435, which indicates that the people looking to get a loan issued in this dataset are seeking out property that is much more expensive than the national average ($123 per sq foot). Makes sense, as most of the data comes from the greater NY city area.
+
+4) The median ZRI_YOY is 0.041 which indicates that housing prices in general for this dataset are increasing year to year. It appears that there are rather few people looking for loans for properties in areas where the ZRI is decreasing year to year.
+
+5) The Household median income is $72,988 on average, compared to the US national average $59,039 and the NYC average of $50,711.
+
+6) the average household rent is $1080.3, compared to the NYC average household rent of $3,185. 
+
+# Machine Learning
+```{r}
+train_sample = sample(nrow(slimdata), size = nrow(slimdata) * 0.66)
+train_data = slimdata[train_sample,]
+test_data = slimdata[-train_sample,]
+
+rf = randomForest(y = train_data$Loan.Issued, x = train_data[, -3], ytest = test_data$Loan.Issued, xtest = test_data[, -3], ntree = 100, mtry = 3, keep.forest = TRUE)
+
+rf
+
+varImpPlot(rf,type=2)
+
+rf$importance
+```
+Recall that the sensitivity can be calculated as TP / (TP + FN) and the specificity can be calculated as TN / (FP + TN). Sensitivity measures the proportion of conversions that are correctly identified as such. Specificity, on the other hand, measures the ability to identify people who don't have a condition.
+
+First, we note that the OOB error rate from the training set and the test set error rate are roughly the same (OOB error rate of 7.33% vs test error rate of 6.35%). This means that there isn't a huge amount of overfitting. The error rate is relatively low. But since only around 9.3% of the data points got loans issued, this is not that impressive- we started from a 93.65% accuracy if we predict everyone as loan issued. While 95.4% test accuracy is good, it isn't that shocking at the same time. Indeed around 50% of non-loan issues are predicted as loan issues.
+
+If we cared about the very best possible accuracy or specifically minimizing false positive/negative, we would also use ROCR and find the best cut-off point. Since that isn't necessarily relevant here, we are fine with the 0.5 default cut off value used internally by random forest to make the prediction.
+
+From the variable importance plot, we see that the balance difference feature is the most important feature by a decent margin. 
+
+So, let's rebuild the RF. Since the class for conversion is heavily unbalanced, let's change the weight a bit so that we do get some classified as 0.
+
+```{r}
+##train_data[, -c(5, ncol(train_data))] ## gets rid of these numbered columns starting, column i
+rf = randomForest(y = train_data$Loan.Issued, x = train_data[, -3], ytest = test_data$Loan.Issued, xtest = test_data[, -3], ntree = 100, mtry = 3, keep.forest = TRUE, classwt = c(0.3,0.7))
+
+rf
+```
+Now, we see that the training error is 7.44% and the test error rate is 5.91%, an improvement from the test error rate of 6.35% before. More importantly, we have reduced the classification error of the non-loan issues from over 44.2% to 32.6%. This is really important because from the bank's perspective, you have to make sure that the loan you issue, for a commitment as large as housing, can be followed through.
+
+Moreover, when we plot the variable importance plot
+
+```{r}
+varImpPlot(rf,type=2)
+```
+
+We see that now household median rent of the zip code is the most important factor as well as the population that is employed for that zip code. Furthermore, we see that the gap in the importance for the features is now smaller.
+
+Now, let's check the partial dependence plots for the 7 variables:
+```{r}
+par(mfrow=c(2,2))
+partialPlot(rf, train_data, BAL_DIFF, 1)
+partialPlot(rf, train_data, CURRENT_FICO_SCORE, 1)
+partialPlot(rf, train_data, MEDIAN_PPSQFT, 1)
+partialPlot(rf, train_data, ZRI_YOY, 1)
+
+par(mfrow=c(2,2))
+partialPlot(rf, train_data, POPULATION_EMPLOYED, 1)
+partialPlot(rf, train_data, HOUSEHOLD_MEDIANINCOME, 1)
+partialPlot(rf, train_data, HOUSEHOLD_MEDIANRENT, 1)
+```
+
+And lastly, we want to make a prediction on the row where the loan ID is 73622 and the house purchase is $500,000. 
+
+```{r}
+row <- data[data$LOANID == 73622,]
+prob <- predict(rf,row,type="prob")
+prob
+```
+
+# Conclusions
+From our partial dependence plots, we don't really care about the actual y values in the partial dependence plots- we care more about their trends. We see that:
+
+- People who were looking to get loans for properties in zipcodes with higher employment were more likely to get the loan issued. This could be because of the fact that in New York, a lot of high-paying jobs tend to be tedious/time-consuming. People will want to live near where they work in that case. Knowing that the person is hard working and is living in a job friendly area is a reason for higher loan issuing.
+
+- For the zipcodes with high household median income and high household median rent, we see that the likelihood to get a loan issued is actually lower than if the median income/median rent was slightly more middle range (50,000-100,000 for income and 700-1500 for median rent). While this may be bizarre, we actually may conclude that there may be people wanting a housing loan for a lifestyle they simply cannot sustain or pay up. This might be lower/middle class people wanting to live an upper scale life by taking out loans. Nonetheless, banks wouldn't want to lend since that money might not come back. If I had more time, I would run another iteration of random forest modeling with the same model but with just one of household median income and household median rent. It seems that the two are somewhat correlated.
+
+- Likelihood to give out loan increases as the current fico score increases, which is pretty intuitive
+
+- Likelihood to give out loan decreases as the median price per square foot increases generally speaking. This may not seem intuitive, but it goes back to the fact that banks want to lend out money for purchases that they feel confident that they can get the money back for. Areas with higher price per square feet are expensive, and banks might be more reluctant to lend.
+
+- One of the most interesting factors to analyze is the year over year for the ZRI, which is a house pricing index. We see that as the YOY grows from around -5% to 5%, the likelihood to give out a housing load grows. Yet, after the 5% YOY point, the likelihood drops. This could be due to the fact that rapidly growing areas in terms of demand may also carry higher risks (more volatile). 
+
+Lastly, we saw from our prediction of the request for a loan for a house price of $500,000 and loan id 73622 that our random forest model would decide that there is 0.93 probability that it is 0 and 0.07 probability that it is 1. Thus, we would conclude that we should not give out the loan for that purchase. Looking back through that dataset, we see that the person making the purchase has a recent drop in FICO score, has a low household income, and also is looking to make a housing purchase that is fairly pricey. From the story that we've told from our random forest model, these characteristics surely sound like reasons to not give out the loan.
